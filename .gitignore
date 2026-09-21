@@ -5,3 +5,7 @@
 __pycache__/
 *.pyc
 *.egg-info/
+
+# Personal host/path config for scripts/lecture.sh — never commit this,
+# it's meant to hold your actual SSH host and remote/local paths.
+scripts/lecture.config

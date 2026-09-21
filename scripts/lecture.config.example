@@ -1,0 +1,29 @@
+# Copy this file to scripts/lecture.config and fill in your own values.
+# scripts/lecture.config is gitignored — it will never be committed or
+# pushed to GitHub, so it's safe to put your real SSH host, IP, and paths
+# in it.
+#
+#   cp scripts/lecture.config.example scripts/lecture.config
+#   # then edit scripts/lecture.config
+
+# SSH target for the remote machine that does the actual work.
+# Must already work as a plain `ssh <this>` (an ~/.ssh/config Host entry,
+# or user@host / user@ip directly).
+SSH_HOST="leenday@192.168.0.10"
+
+# Where the mtslinker-fixed repo lives on that remote machine.
+REMOTE_REPO_DIR="/home/leenday/programs/mtslinker"
+
+# Base directory on the remote machine where lecture downloads go. Reused
+# for every lecture — mtslinker creates its own subfolder per lecture.
+REMOTE_OUT_BASE="/mnt/external_drive/lectures/downloads"
+
+# Where to save the finished transcript + slides on this (local) machine.
+LOCAL_DEST="/Users/leenday/Documents/Study/SPBPU/lectures/transcribed"
+
+# Optional — whisper.cpp config, forwarded to the remote run.
+WHISPER_MODELS_DIR="/mnt/external_drive/lectures/whisper/models"
+WHISPER_LANG="en"
+# WHISPER_MODEL="ggml-base.bin"
+# VAD_MODEL="ggml-silero-v5.1.2.bin"
+# WHISPER_THREADS="4"

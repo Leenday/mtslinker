@@ -18,6 +18,13 @@
 #   VAD_MODEL         default: ggml-silero-v5.1.2.bin
 #   WHISPER_LANG      default: en
 #   WHISPER_THREADS   default: 4
+#   LECTURE_DIR       skip auto-detecting the lecture's output directory
+#                     and use this one instead (its name under
+#                     output_base_dir, not a full path) — needed when
+#                     re-running against a lecture you already downloaded,
+#                     since there's then no "new" directory to detect.
+#                     If audio/wav for it already exist, those steps are
+#                     skipped instead of redone from scratch.
 
 set -euo pipefail
 
@@ -68,19 +75,34 @@ if [ ! -f "$MODELS_DIR/$WHISPER_MODEL" ]; then
 fi
 
 echo "== Step 1/4: downloading audio + slides =="
-BEFORE=$(ls -1 "$OUT_BASE" 2>/dev/null || true)
-docker run --rm -v "$OUT_BASE:/app" "$MTSLINKER_IMAGE" "$URL" --audio-only --slides-only
-AFTER=$(ls -1 "$OUT_BASE")
-LECTURE_DIR=$(comm -13 <(printf '%s\n' "$BEFORE" | sort) <(printf '%s\n' "$AFTER" | sort) | head -1)
+LECTURE_DIR="${LECTURE_DIR:-}"
 
-if [ -z "$LECTURE_DIR" ]; then
-    echo "Could not auto-detect the new lecture directory under $OUT_BASE" >&2
-    echo "(this happens if you re-run against a lecture you already downloaded)." >&2
-    echo "Existing directories:" >&2
-    ls -1 "$OUT_BASE" >&2
-    echo "Re-run with the directory name appended, e.g.:" >&2
-    echo "  LECTURE_DIR=<name> $0 '$URL' '$OUT_BASE'" >&2
-    exit 1
+if [ -n "$LECTURE_DIR" ]; then
+    if [ ! -d "$OUT_BASE/$LECTURE_DIR" ]; then
+        echo "LECTURE_DIR='$LECTURE_DIR' does not exist under $OUT_BASE" >&2
+        exit 1
+    fi
+    EXISTING_M4A=$(find "$OUT_BASE/$LECTURE_DIR" -maxdepth 1 -name '*.m4a' | head -1)
+    if [ -n "$EXISTING_M4A" ]; then
+        echo "Reusing existing audio: $EXISTING_M4A (skipping download+mix)"
+    else
+        docker run --rm -v "$OUT_BASE:/app" "$MTSLINKER_IMAGE" "$URL" --audio-only --slides-only
+    fi
+else
+    BEFORE=$(ls -1 "$OUT_BASE" 2>/dev/null || true)
+    docker run --rm -v "$OUT_BASE:/app" "$MTSLINKER_IMAGE" "$URL" --audio-only --slides-only
+    AFTER=$(ls -1 "$OUT_BASE")
+    LECTURE_DIR=$(comm -13 <(printf '%s\n' "$BEFORE" | sort) <(printf '%s\n' "$AFTER" | sort) | head -1)
+
+    if [ -z "$LECTURE_DIR" ]; then
+        echo "Could not auto-detect the new lecture directory under $OUT_BASE" >&2
+        echo "(this happens if you re-run against a lecture you already downloaded)." >&2
+        echo "Existing directories:" >&2
+        ls -1 "$OUT_BASE" >&2
+        echo "Re-run with the directory name appended, e.g.:" >&2
+        echo "  LECTURE_DIR=<name> $0 '$URL' '$OUT_BASE'" >&2
+        exit 1
+    fi
 fi
 echo "Lecture directory: $LECTURE_DIR"
 
@@ -93,9 +115,13 @@ BASENAME="${M4A_NAME%.m4a}"
 WAV_NAME="${BASENAME}.wav"
 
 echo "== Step 2/4: converting to 16kHz mono wav =="
-docker run --rm --entrypoint ffmpeg -v "$OUT_BASE:/app" -w /app "$MTSLINKER_IMAGE" \
-    -y -i "$LECTURE_DIR/$M4A_NAME" -ar 16000 -ac 1 -c:a pcm_s16le \
-    "$LECTURE_DIR/$WAV_NAME"
+if [ -f "$OUT_BASE/$LECTURE_DIR/$WAV_NAME" ]; then
+    echo "Reusing existing wav: $OUT_BASE/$LECTURE_DIR/$WAV_NAME (skipping conversion)"
+else
+    docker run --rm --entrypoint ffmpeg -v "$OUT_BASE:/app" -w /app "$MTSLINKER_IMAGE" \
+        -y -i "$LECTURE_DIR/$M4A_NAME" -ar 16000 -ac 1 -c:a pcm_s16le \
+        "$LECTURE_DIR/$WAV_NAME"
+fi
 
 echo "== Step 3/4: ensuring VAD model is present =="
 if [ ! -f "$MODELS_DIR/$VAD_MODEL" ]; then

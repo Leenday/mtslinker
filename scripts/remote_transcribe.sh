@@ -25,9 +25,9 @@
 #
 # Any of transcribe_lecture.sh's own config env vars (MTSLINKER_IMAGE,
 # WHISPER_IMAGE, WHISPER_MODELS_DIR, WHISPER_MODEL, VAD_MODEL, WHISPER_LANG,
-# WHISPER_THREADS) can be set in THIS script's environment and are forwarded
-# to the remote run, e.g. to point at whisper models you already have on
-# the remote machine instead of downloading fresh ones:
+# WHISPER_THREADS, LECTURE_DIR) can be set in THIS script's environment and
+# are forwarded to the remote run, e.g. to point at whisper models you
+# already have on the remote machine instead of downloading fresh ones:
 #   WHISPER_MODELS_DIR=/mnt/external_drive/lectures/whisper/models \
 #       ./scripts/remote_transcribe.sh ...
 
@@ -35,7 +35,7 @@ set -euo pipefail
 
 REMOTE_ENV=""
 for var in MTSLINKER_IMAGE WHISPER_IMAGE WHISPER_MODELS_DIR WHISPER_MODEL \
-           VAD_MODEL WHISPER_LANG WHISPER_THREADS; do
+           VAD_MODEL WHISPER_LANG WHISPER_THREADS LECTURE_DIR; do
     if [ -n "${!var:-}" ]; then
         REMOTE_ENV="$REMOTE_ENV $var='${!var}'"
     fi

@@ -29,6 +29,26 @@ fi
 URL="$1"
 OUT_BASE="${2:-$PWD}"
 
+docker_mkdir_p() {
+    # mkdir -p that works even when the target lives on a filesystem that
+    # denies directory creation to the invoking user (e.g. an external
+    # drive mounted exFAT with a fixed uid) — creates it as root inside a
+    # container instead. Finds the nearest existing ancestor and bind-mounts
+    # *that* (never a not-yet-existing path — letting Docker auto-create a
+    # bind-mount source triggers a chown that exFAT rejects outright, even
+    # for root).
+    local target="$1" parent
+    parent="$target"
+    while [ ! -d "$parent" ]; do
+        parent="$(dirname "$parent")"
+    done
+    if [ "$parent" = "$target" ]; then
+        return 0
+    fi
+    docker run --rm -v "$parent:/parent" --entrypoint mkdir "$MTSLINKER_IMAGE" \
+        -p "/parent/${target#"$parent"/}"
+}
+
 MTSLINKER_IMAGE="${MTSLINKER_IMAGE:-mtslinker-fixed}"
 WHISPER_IMAGE="${WHISPER_IMAGE:-ghcr.io/ggml-org/whisper.cpp:main}"
 MODELS_DIR="${WHISPER_MODELS_DIR:-$OUT_BASE/whisper_models}"
@@ -37,7 +57,8 @@ VAD_MODEL="${VAD_MODEL:-ggml-silero-v5.1.2.bin}"
 LANG="${WHISPER_LANG:-en}"
 THREADS="${WHISPER_THREADS:-4}"
 
-mkdir -p "$OUT_BASE" "$MODELS_DIR"
+docker_mkdir_p "$OUT_BASE"
+docker_mkdir_p "$MODELS_DIR"
 
 if [ ! -f "$MODELS_DIR/$WHISPER_MODEL" ]; then
     echo "Missing whisper model: $MODELS_DIR/$WHISPER_MODEL" >&2

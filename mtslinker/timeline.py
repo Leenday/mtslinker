@@ -114,6 +114,11 @@ class StreamTimeline:
         windows = self._compute_windows()
         return windows
 
+    # Roles observed in the wild that designate the event's presenter/owner
+    # rather than a regular attendee. MTS-Link uses 'ADMIN' in some events
+    # and 'LECTURER' in others for what is functionally the same role.
+    ADMIN_ROLES = {'ADMIN', 'LECTURER'}
+
     def _extract_admin_info(self, json_data: dict):
         """Extract admin user IDs and their conference IDs."""
         admin_user_ids = set()
@@ -135,7 +140,7 @@ class StreamTimeline:
                 if 'userlist' in module:
                     role = d.get('role', '')
                     user = d.get('user', {})
-                    if isinstance(user, dict) and role == 'ADMIN':
+                    if isinstance(user, dict) and role in self.ADMIN_ROLES:
                         uid = user.get('id')
                         if uid:
                             admin_user_ids.add(uid)
@@ -151,13 +156,27 @@ class StreamTimeline:
             self.admin_conf_ids.update(user_to_conf.get(uid, set()))
 
     def _extract_sessions(self, json_data: dict):
-        """Extract mediasession.add/update events into MediaSession objects."""
+        """Extract mediasession.add/update events into MediaSession objects.
+
+        Processes events in a single chronological pass so that a
+        mediasession picks up the conference's hasAudio/hasVideo state as of
+        the moment it started, not whatever that conference's state happened
+        to be by the end of the whole recording. A two-pass approach (build
+        conf_props from *all* events, then stamp it onto every mediasession)
+        was tried before and is wrong: a conference muted right before the
+        participant left the call retroactively marks that person's audio as
+        absent for their entire multi-hour recording, even though the
+        downloaded file has a real audio track the whole time.
+        """
         conf_users = {}
         conf_props = {}
 
-        for event in json_data.get('eventLogs', []):
-            if not isinstance(event, dict):
-                continue
+        events = sorted(
+            (e for e in json_data.get('eventLogs', []) if isinstance(e, dict)),
+            key=lambda e: e.get('relativeTime', 0),
+        )
+
+        for event in events:
             module = event.get('module', '')
             data = event.get('data', {})
             if not isinstance(data, dict):
@@ -183,15 +202,7 @@ class StreamTimeline:
                     if 'hasVideo' in data:
                         conf_props[cid]['has_video'] = data['hasVideo']
 
-        for event in json_data.get('eventLogs', []):
-            if not isinstance(event, dict):
-                continue
-            module = event.get('module', '')
-            data = event.get('data', {})
-            if not isinstance(data, dict):
-                continue
-
-            if module == 'mediasession.add' and 'url' in data:
+            elif module == 'mediasession.add' and 'url' in data:
                 ms_id = data.get('id')
                 if not ms_id:
                     continue
@@ -226,9 +237,7 @@ class StreamTimeline:
 
         # Fallback: pick up URLs not covered by mediasession events
         known_urls = {s.url for s in self.sessions.values()}
-        for event in json_data.get('eventLogs', []):
-            if not isinstance(event, dict):
-                continue
+        for event in events:
             module = event.get('module', '')
             data = event.get('data', {})
             if not isinstance(data, dict):

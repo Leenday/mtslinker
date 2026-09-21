@@ -18,6 +18,55 @@ class AudioMerger:
         self.ffmpeg = ffmpeg
         self.prober = prober
 
+    def _amix_group(self, inputs: List[str], output_path: str, description: str) -> str:
+        """Mix same-format audio files into output_path via a single amix.
+
+        ffmpeg's amix filter can fail with 'Error while filtering: Invalid
+        argument' for certain (input count, total duration) combinations on
+        very long (multi-hour) recordings — observed reproducibly at 6
+        inputs on a ~3.3 hour mix, while 2-5 inputs of the same files always
+        succeeded. On failure, split the group in half and retry each half
+        recursively, then combine the two halves — this reliably works
+        around it without silently dropping audio.
+        """
+        if len(inputs) == 1:
+            shutil.copy(inputs[0], output_path)
+            return output_path
+
+        labels = ''.join(f'[{j}:a]' for j in range(len(inputs)))
+        amix_filter = f'{labels}amix=inputs={len(inputs)}:duration=longest:normalize=0'
+        cmd = ['ffmpeg', '-y', '-v', 'error']
+        for p in inputs:
+            cmd.extend(['-i', p])
+        cmd.extend([
+            '-filter_complex', amix_filter,
+            '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+            output_path,
+        ])
+
+        try:
+            self.ffmpeg.run(cmd, description=description)
+            return output_path
+        except subprocess.CalledProcessError:
+            if len(inputs) <= 2:
+                raise
+            logging.warning(
+                f'{description}: amix with {len(inputs)} inputs failed, '
+                f'retrying as two smaller groups'
+            )
+            mid = len(inputs) // 2
+            left = output_path + '.left.m4a'
+            right = output_path + '.right.m4a'
+            self._amix_group(inputs[:mid], left, f'{description} (left half)')
+            self._amix_group(inputs[mid:], right, f'{description} (right half)')
+            self._amix_group([left, right], output_path, f'{description} (final pair)')
+            for p in (left, right):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            return output_path
+
     def merge(self, video_path: str,
               audio_files: List[Union[AudioTrack, tuple]],
               tmp_dir: str, output_path: str,
@@ -106,25 +155,8 @@ class AudioMerger:
                 batch_out = os.path.join(
                     tmp_dir, f'audio_reduce_r{round_num}_b{batch_start}.m4a'
                 )
-                inputs = []
-                for bp in batch:
-                    inputs.extend(['-i', bp])
-
-                labels = ''.join(f'[{j}:a]' for j in range(len(batch)))
-                amix_filter = (
-                    f'{labels}amix=inputs={len(batch)}'
-                    f':duration=longest:normalize=0'
-                )
-
-                self.ffmpeg.run(
-                    [
-                        'ffmpeg', '-y', '-v', 'error',
-                        *inputs,
-                        '-filter_complex', amix_filter,
-                        '-c:a', 'aac', '-b:a', '128k',
-                        '-ar', '44100', '-ac', '2',
-                        batch_out,
-                    ],
+                self._amix_group(
+                    batch, batch_out,
                     description=f'amix reduce round {round_num}, {len(batch)} tracks',
                 )
                 next_paths.append(batch_out)

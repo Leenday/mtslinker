@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple, Union
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
+import img2pdf
 import tqdm
 import logging
 
@@ -51,9 +52,16 @@ def construct_json_data_url(event_session_id: str, recording_id: str) -> str:
     if not event_session_id:
         raise ValueError('Missing webinar event session ID.')
 
+    # withoutCuts=true returns the full, uncut event log and duration.
+    # withoutCuts=false (despite the name) makes the API silently drop the
+    # eventLogs entries inside any organizer-marked cut region and shrinks
+    # `duration` by exactly that region's length — verified on a real
+    # recording where a presenter's mediasession.add (webcam+mic, real
+    # speech throughout) fell inside the cut window and only appeared with
+    # withoutCuts=true.
     if not recording_id:
-        return f'https://my.mts-link.ru/api/eventsessions/{event_session_id}/record?withoutCuts=false'
-    return f'https://my.mts-link.ru/api/event-sessions/{event_session_id}/record-files/{recording_id}/flow?withoutCuts=false'
+        return f'https://my.mts-link.ru/api/eventsessions/{event_session_id}/record?withoutCuts=true'
+    return f'https://my.mts-link.ru/api/event-sessions/{event_session_id}/record-files/{recording_id}/flow?withoutCuts=true'
 
 
 def fetch_json_data(url: str, session_id: Union[str, None]) -> Dict:
@@ -158,7 +166,12 @@ def download_slide_images(
         url = se['slide_url']
         if url in url_to_path:
             continue
-        local_path = os.path.join(slides_dir, f"slide_{se['slide_number']}.jpg")
+        # slide_number is unreliable (the API's slide objects don't always
+        # carry a real page-number field, in which case it's a constant
+        # placeholder) — keying the filename off the number caused distinct
+        # slides to collide onto the same path and overwrite each other.
+        # The URL's own filename is unique per distinct slide image.
+        local_path = os.path.join(slides_dir, os.path.basename(url))
         if not os.path.exists(local_path):
             try:
                 with httpx.Client(timeout=httpx.Timeout(30)) as client:
@@ -179,6 +192,31 @@ def download_slide_images(
 
     logging.info(f'Downloaded {len(url_to_path)} unique slide images')
     return result
+
+
+def combine_slides_to_pdf(slide_events: List[Dict], output_path: str) -> Union[str, None]:
+    """Combine downloaded slide images (in first-seen / chronological order,
+    deduplicated) into a single PDF.
+
+    Args:
+        slide_events: List of dicts with a 'local_path' key, as returned by
+            download_slide_images().
+        output_path: Where to write the combined PDF.
+
+    Returns:
+        output_path, or None if there were no slide images to combine.
+    """
+    ordered_paths = list(dict.fromkeys(
+        se['local_path'] for se in slide_events if se.get('local_path')
+    ))
+    if not ordered_paths:
+        return None
+
+    with open(output_path, 'wb') as f:
+        f.write(img2pdf.convert(ordered_paths))
+
+    logging.info(f'Combined {len(ordered_paths)} slides into {output_path}')
+    return output_path
 
 
 def download_chunks_parallel(

@@ -22,8 +22,24 @@
 # Only the finished artifacts are copied back — transcript, subtitles,
 # slide images/PDF, manifest. The raw downloaded video chunks and
 # intermediate audio (.mp4/.m4a/.wav) stay on the remote machine.
+#
+# Any of transcribe_lecture.sh's own config env vars (MTSLINKER_IMAGE,
+# WHISPER_IMAGE, WHISPER_MODELS_DIR, WHISPER_MODEL, VAD_MODEL, WHISPER_LANG,
+# WHISPER_THREADS) can be set in THIS script's environment and are forwarded
+# to the remote run, e.g. to point at whisper models you already have on
+# the remote machine instead of downloading fresh ones:
+#   WHISPER_MODELS_DIR=/mnt/external_drive/lectures/whisper/models \
+#       ./scripts/remote_transcribe.sh ...
 
 set -euo pipefail
+
+REMOTE_ENV=""
+for var in MTSLINKER_IMAGE WHISPER_IMAGE WHISPER_MODELS_DIR WHISPER_MODEL \
+           VAD_MODEL WHISPER_LANG WHISPER_THREADS; do
+    if [ -n "${!var:-}" ]; then
+        REMOTE_ENV="$REMOTE_ENV $var='${!var}'"
+    fi
+done
 
 if [ $# -lt 4 ]; then
     echo "Usage: $0 '<mts-link-url>' <ssh-host> <remote-repo-dir> <remote-output-base-dir> [local-dest-dir]" >&2
@@ -42,7 +58,7 @@ echo "== Running pipeline on $SSH_HOST (this can take a while for a multi-hour l
 # REMOTE_REPO_DIR is deliberately left unquoted in the remote command below
 # so the remote shell expands a leading '~' itself — quoting it would send
 # a literal tilde character and cd would fail with "no such file".
-OUTPUT=$(ssh "$SSH_HOST" "cd $REMOTE_REPO_DIR && ./scripts/transcribe_lecture.sh '$URL' '$REMOTE_OUT_BASE'")
+OUTPUT=$(ssh "$SSH_HOST" "cd $REMOTE_REPO_DIR &&$REMOTE_ENV ./scripts/transcribe_lecture.sh '$URL' '$REMOTE_OUT_BASE'")
 echo "$OUTPUT"
 
 RESULT_DIR=$(printf '%s\n' "$OUTPUT" | grep '^RESULT_DIR=' | tail -1 | cut -d= -f2-)

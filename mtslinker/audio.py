@@ -67,6 +67,73 @@ class AudioMerger:
                     pass
             return output_path
 
+    def _build_batch(self, batch: List[AudioTrack], video_duration: float,
+                      out_path: str, description: str) -> str:
+        """Align+mix a batch of AudioTracks (adelay/apad/atrim) into out_path.
+
+        Subject to the same ffmpeg amix 'Invalid argument' bug as
+        _amix_group. On failure, split the batch in half and retry each
+        half recursively, then combine the two halves — this avoids
+        silently dropping entire batches of audio (previously the only
+        fallback here was to skip the whole batch).
+        """
+        inputs = []
+        filter_parts = []
+        mix_labels = []
+        for j, track in enumerate(batch):
+            inputs.extend(['-i', track.path])
+            delay_ms = int(track.start_time * 1000)
+            label = f'a{j}'
+            filter_parts.append(
+                f'[{j}:a]adelay={delay_ms}|{delay_ms},'
+                f'apad=whole_dur={video_duration},'
+                f'atrim=0:{video_duration},'
+                f'asetpts=PTS-STARTPTS[{label}]'
+            )
+            mix_labels.append(f'[{label}]')
+
+        if len(batch) == 1:
+            filter_graph = filter_parts[0].rsplit('[', 1)[0]
+        else:
+            filter_graph = (
+                ';'.join(filter_parts) + ';'
+                + ''.join(mix_labels)
+                + f'amix=inputs={len(batch)}:duration=longest:normalize=0'
+            )
+
+        cmd = [
+            'ffmpeg', '-y', '-v', 'error',
+            *inputs,
+            '-filter_complex', filter_graph,
+            '-c:a', 'aac', '-b:a', '128k',
+            '-ar', '44100', '-ac', '2',
+            out_path,
+        ]
+        try:
+            self.ffmpeg.run(cmd, description=description)
+            return out_path
+        except subprocess.CalledProcessError:
+            if len(batch) <= 1:
+                raise
+            logging.warning(
+                f'{description}: failed with {len(batch)} tracks, '
+                f'retrying as two smaller groups'
+            )
+            mid = len(batch) // 2
+            left = out_path + '.left.m4a'
+            right = out_path + '.right.m4a'
+            self._build_batch(batch[:mid], video_duration, left,
+                               f'{description} (left half)')
+            self._build_batch(batch[mid:], video_duration, right,
+                               f'{description} (right half)')
+            self._amix_group([left, right], out_path, f'{description} (final pair)')
+            for p in (left, right):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            return out_path
+
     def merge(self, video_path: str,
               audio_files: List[Union[AudioTrack, tuple]],
               tmp_dir: str, output_path: str,
@@ -90,40 +157,9 @@ class AudioMerger:
             batch = tracks[batch_start:batch_start + self.BATCH_SIZE]
             batch_out = os.path.join(tmp_dir, f'audio_batch_{batch_idx}.m4a')
 
-            inputs = []
-            filter_parts = []
-            mix_labels = []
-            for j, track in enumerate(batch):
-                inputs.extend(['-i', track.path])
-                delay_ms = int(track.start_time * 1000)
-                label = f'a{j}'
-                filter_parts.append(
-                    f'[{j}:a]adelay={delay_ms}|{delay_ms},'
-                    f'apad=whole_dur={video_duration},'
-                    f'atrim=0:{video_duration},'
-                    f'asetpts=PTS-STARTPTS[{label}]'
-                )
-                mix_labels.append(f'[{label}]')
-
-            if len(batch) == 1:
-                filter_graph = filter_parts[0].rsplit('[', 1)[0]
-            else:
-                filter_graph = (
-                    ';'.join(filter_parts) + ';'
-                    + ''.join(mix_labels)
-                    + f'amix=inputs={len(batch)}:duration=longest:normalize=0'
-                )
-
             try:
-                self.ffmpeg.run(
-                    [
-                        'ffmpeg', '-y', '-v', 'error',
-                        *inputs,
-                        '-filter_complex', filter_graph,
-                        '-c:a', 'aac', '-b:a', '128k',
-                        '-ar', '44100', '-ac', '2',
-                        batch_out,
-                    ],
+                self._build_batch(
+                    batch, video_duration, batch_out,
                     description=f'amix batch {batch_idx+1} '
                                 f'({len(batch)} tracks, offset {batch[0].start_time:.0f}-'
                                 f'{batch[-1].start_time:.0f}s)',
@@ -131,7 +167,8 @@ class AudioMerger:
                 batch_outputs.append(batch_out)
             except subprocess.CalledProcessError:
                 logging.warning(
-                    f'Audio batch {batch_idx+1} failed, skipping {len(batch)} tracks'
+                    f'Audio batch {batch_idx+1} failed even after retrying as '
+                    f'smaller groups, skipping {len(batch)} tracks'
                 )
             logging.info(f'Audio batch {batch_idx+1}/{total_batches} done')
 
